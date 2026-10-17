@@ -173,7 +173,7 @@
   <label class="photo-btn" id="photoBtn" for="photoInput">写真を撮って推定する</label>
   <input id="photoInput" type="file" accept="image/*" capture="user" hidden>
 
-  <p class="note">見た目からの推定値で、実年齢ではありません。照明・顔の向き・メガネなどで変わります。映像・写真・録画は端末の外へ送信されません。開始から最初の1分間のカメラ映像が自動で録画され、端末の「ダウンロード」に保存されます。</p>
+  <p class="note">見た目からの推定値で、実年齢ではありません。照明・顔の向き・メガネなどで変わります。映像・写真・録画は端末の外へ送信されません。開始から最初の10秒間のカメラ映像が自動で録画され、端末の「ダウンロード」に保存されます。</p>
 </div>
 
 <script>
@@ -182,7 +182,7 @@
   // ============================================================
   const MODEL_URL = "https://cdn.jsdelivr.net/npm/@vladmandic/face-api@1.7.15/model/"; // 学習済みモデルの場所（インターネット上）
   const INTERVAL_MS = 200;          // 推定の間隔（ミリ秒）。スマホ向けにPC版より長め
-  const INPUT_SIZE = 224;           // 解析する画像の大きさ。小さいほど速いが精度は下がる（32の倍数）
+  const INPUT_SIZE = 160;           // 解析する画像の大きさ。小さいほど速いが精度は下がる（32の倍数）
   const SMOOTHING = 0.15;           // 年齢・性別の揺れを抑える強さ（0〜1、小さいほど安定）
   const SCORE_THRESHOLD = 0.5;      // 顔検出の厳しさ（0〜1）
 
@@ -264,7 +264,20 @@
   // ============================================================
   // ① モデル読み込み
   // ============================================================
+  let backendName = "";   // AIの計算方式（webgl = GPUで高速 / cpu = CPUのみで非常に遅い）
+
   async function loadModels() {
+    // 計算方式として、GPUを使う「webgl」を優先して選ぶ。使えない端末では自動で別方式になる
+    setStatus("計算の準備中…");
+    try {
+      await faceapi.tf.setBackend("webgl");
+      await faceapi.tf.ready();
+      backendName = faceapi.tf.getBackend();   // 実際に使われる方式を記録（画面に表示して原因調査に使う）
+    } catch (e) {
+      console.warn(e);
+      backendName = "不明";                    // 方式を確認できなかった場合
+    }
+
     setStatus("モデルを読み込み中…（約1MB）");
     await Promise.all([
       faceapi.nets.tinyFaceDetector.loadFromUri(MODEL_URL),     // 顔の位置
@@ -299,6 +312,7 @@
   // ============================================================
   async function liveLoop() {
     if (!liveRunning) return;
+    let elapsed = 0;   // 今回の推定にかかった時間（ミリ秒）
     try {
       const ctx = overlay.getContext("2d");
       // 端末を回転させると映像サイズが変わるので、そのたびに合わせ直す
@@ -306,19 +320,28 @@
         overlay.width = video.videoWidth; overlay.height = video.videoHeight;
         stage.style.aspectRatio = video.videoWidth + " / " + video.videoHeight;
       }
+      const t0 = performance.now();          // 計測開始
       const r = await analyze(video);
+      elapsed = performance.now() - t0;      // 計測終了
       ctx.clearRect(0, 0, overlay.width, overlay.height);
+      // 状態表示に「計算方式」と「1回あたりの処理時間」を出す（動作が重いときの原因調査用）
+      const info = `（方式：${backendName}／1回 ${Math.round(elapsed)}ミリ秒）`;
       if (r) {
         showResult(r, true);
         drawBox(ctx, r.detection.box);
-        setStatus("推定中");
+        setStatus("推定中" + info);
       } else {
-        setStatus("顔が見つかりません。画面に顔を正面から映してください。");
+        setStatus("顔が見つかりません。画面に顔を正面から映してください。" + info);
       }
     } catch (e) {
       console.error(e);
+      // エラーの内容を画面に出す（以前は見えなかったため、止まっているように見えていた可能性がある）
+      setStatus("推定中にエラー：" + (e && e.message ? e.message : e), true);
     }
-    setTimeout(liveLoop, INTERVAL_MS);
+    // 次の推定までの待ち時間。処理が重い端末では自動で長くして、
+    // 映像の表示や画面の操作に処理を回せるようにする（画面が固まるのを防ぐ）
+    const wait = Math.max(INTERVAL_MS, elapsed * 1.5);
+    setTimeout(liveLoop, wait);
   }
 
   // ============================================================
@@ -373,8 +396,8 @@
   //   ・途中で別のアプリに切り替えたら、そこで録画を終了し、ページに戻ったときに保存する
   //   MediaRecorder：ブラウザに組み込まれた録画の仕組み
   // ============================================================
-  const RECORD_SECONDS = 60;           // 録画する長さ（秒）。60 = 最初の1分間
-  const VIDEO_BITRATE = 2_500_000;     // 録画の画質（ビットレート）。2.5Mbps ≒ 1分あたり約19MB
+  const RECORD_SECONDS = 10;           // 録画する長さ（秒）。10 = 最初の10秒間
+  const VIDEO_BITRATE = 2_500_000;     // 録画の画質（ビットレート）。2.5Mbps ≒ 10秒あたり約3MB
 
   let cameraStream = null;   // カメラ映像の流れ（startCamera で設定）
   let recorder = null;       // 録画を担当するオブジェクト
