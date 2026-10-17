@@ -1,0 +1,488 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<!-- スマホの画面幅に合わせて表示。viewport-fit=cover でノッチ付き端末にも対応 -->
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>年齢推定カメラ</title>
+<!--
+  ============================================================
+  年齢推定カメラ（Android / スマホ向け・前面カメラ専用）
+  ------------------------------------------------------------
+  ・前面カメラの映像から、見た目の年齢／性別／表情を推定して表示します。
+  ・推定はすべて端末のブラウザ内で行います（映像はどこにも送信しません）。
+  ・ライブラリ本体と学習済みモデルは、起動時に jsDelivr（ファイル配布サービス）から
+    ダウンロードします。推定の計算そのものは端末内で行います。
+  ・カメラが使えない環境では「写真を撮って推定」に自動で切り替わります。
+  ============================================================
+-->
+
+<!-- 日本語フォント（Google Fonts）。読み込めなくても端末の標準フォントで表示される -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Zen+Kaku+Gothic+New:wght@400;700&family=IBM+Plex+Mono:wght@500&display=swap">
+
+<!-- 顔認識ライブラリ本体。読み込むと「faceapi」という名前で使えるようになる -->
+<script src="https://cdn.jsdelivr.net/npm/@vladmandic/face-api@1.7.15/dist/face-api.js"></script>
+
+<style>
+  /* レイアウト：スマホ縦画面1枚。上から 映像 → 結果3項目 → 状態表示 → 写真ボタン */
+  :root {
+    /* ===== 色（ライトテーマ） ===== */
+    --bg: #eef2f1;        /* 背景：わずかに青緑寄りのグレー */
+    --surface: #ffffff;   /* 結果カードの地色 */
+    --fg: #17201e;        /* 文字色 */
+    --muted: #5d6b68;     /* 補足文字 */
+    --accent: #0f8a7e;    /* 強調色（顔の枠線・ボタン） */
+    --line: #d5dddb;      /* 区切り線 */
+    --screen: #0c1211;    /* 映像の背景 */
+    /* ===== 文字 ===== */
+    --font-body: "Zen Kaku Gothic New", "Hiragino Sans", "Noto Sans JP", "Meiryo", sans-serif;
+    --font-num: "IBM Plex Mono", ui-monospace, "Menlo", monospace;
+  }
+  /* ===== 色（ダークテーマ：端末がダーク設定のとき） ===== */
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #0f1514; --surface: #18201f; --fg: #e6eeec; --muted: #93a3a0;
+      --accent: #3cc7b8; --line: #2a3533; --screen: #000; color-scheme: dark;
+    }
+  }
+  /* ===== 色（ダークテーマ：手動でダークを選んだとき） ===== */
+  :root[data-theme="dark"] {
+    --bg: #0f1514; --surface: #18201f; --fg: #e6eeec; --muted: #93a3a0;
+    --accent: #3cc7b8; --line: #2a3533; --screen: #000; color-scheme: dark;
+  }
+
+  html, body { height: 100%; }
+  body { margin: 0; }
+  body {
+    background: var(--bg);
+    color: var(--fg);
+    font-family: var(--font-body);
+    /* 左右の余白（スマホの画面端・ノッチを避ける） */
+    padding-left: max(16px, env(safe-area-inset-left, 0px));
+    padding-right: max(16px, env(safe-area-inset-right, 0px));
+    padding-block: 12px 20px;
+  }
+  /* 中身を縦に並べる入れ物（最大幅を決めて中央寄せ） */
+  .app {
+    max-width: 520px;
+    margin: 0 auto;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+  header { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+  h1 { margin: 0; font-size: 18px; font-weight: 700; letter-spacing: .02em; }
+  .tag { font-size: 12px; color: var(--muted); }
+
+  /* 映像と枠線を重ねる入れ物 */
+  .stage {
+    position: relative;
+    width: 100%;
+    max-width: 100%;
+    aspect-ratio: 3 / 4;          /* 映像が来るまでの仮の縦横比（縦長） */
+    background: var(--screen);
+    border-radius: 14px;
+    overflow: hidden;
+  }
+  /* カメラ映像。前面カメラなので鏡のように左右反転 */
+  .stage video, .stage #overlay {
+    position: absolute; inset: 0;
+    width: 100%; height: 100%;
+    transform: scaleX(-1);
+  }
+  .stage video { object-fit: contain; }
+  .stage #overlay { pointer-events: none; }
+  /* 写真モードの表示用キャンバス（反転しない） */
+  .stage #photo { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
+
+  /* 映像の上に重ねる大きな年齢表示 */
+  .badge {
+    position: absolute;
+    left: 12px; bottom: 12px;
+    padding: 6px 12px 8px;
+    border-radius: 10px;
+    background: rgba(0, 0, 0, .55);
+    color: #fff;
+    display: flex; align-items: baseline; gap: 4px;
+  }
+  .badge .num { font-family: var(--font-num); font-size: 44px; line-height: 1; font-variant-numeric: tabular-nums; }
+  .badge .unit { font-size: 16px; }
+
+  /* 結果3項目（年齢・性別・表情） */
+  .results {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+  }
+  .cell { padding: 10px 8px; text-align: center; min-width: 0; }
+  .cell + .cell { border-left: 1px solid var(--line); }
+  .label { font-size: 11px; color: var(--muted); letter-spacing: .08em; }
+  .value { font-size: 22px; font-weight: 700; margin-top: 2px; font-variant-numeric: tabular-nums; }
+  .sub { font-size: 11px; color: var(--muted); margin-top: 2px; font-family: var(--font-num); }
+
+  .status { font-size: 13px; color: var(--muted); min-height: 1.5em; }
+  .status.error { color: #c0392b; }
+
+  /* 写真で推定するボタン（カメラ不可のときに主役になる） */
+  .photo-btn {
+    display: flex; align-items: center; justify-content: center;
+    min-height: 48px;                 /* 指で押しやすい高さ */
+    border-radius: 12px;
+    border: 1.5px solid var(--accent);
+    color: var(--accent);
+    background: transparent;
+    font: inherit; font-weight: 700; font-size: 15px;
+    cursor: pointer;
+  }
+  .photo-btn.primary { background: var(--accent); color: var(--surface); }
+  .photo-btn:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+  .note { font-size: 11px; line-height: 1.6; color: var(--muted); margin: 0; }
+
+</style>
+</head>
+<body>
+
+<div class="app">
+  <header>
+    <h1>年齢推定カメラ</h1>
+    <span class="tag">前面カメラ・端末内で処理</span>
+  </header>
+
+  <!-- 映像エリア -->
+  <div class="stage" id="stage">
+    <video id="video" autoplay muted playsinline></video>
+    <canvas id="overlay"></canvas>
+    <canvas id="photo" hidden></canvas>
+    <div class="badge" id="badge" hidden><span class="num" id="badgeNum">--</span><span class="unit">歳</span></div>
+  </div>
+
+  <!-- 結果 -->
+  <div class="results">
+    <div class="cell"><div class="label">推定年齢</div><div class="value" id="age">--</div><div class="sub" id="ageSub">&nbsp;</div></div>
+    <div class="cell"><div class="label">推定性別</div><div class="value" id="gender">--</div><div class="sub" id="genderSub">&nbsp;</div></div>
+    <div class="cell"><div class="label">表情</div><div class="value" id="expr">--</div><div class="sub" id="exprSub">&nbsp;</div></div>
+  </div>
+
+  <div class="status" id="status">準備中…</div>
+
+
+  <!-- 写真モード：capture="user" で、Androidでは前面カメラのアプリが直接開く -->
+  <label class="photo-btn" id="photoBtn" for="photoInput">写真を撮って推定する</label>
+  <input id="photoInput" type="file" accept="image/*" capture="user" hidden>
+
+  <p class="note">見た目からの推定値で、実年齢ではありません。照明・顔の向き・メガネなどで変わります。映像・写真・録画は端末の外へ送信されません。開始から最初の1分間のカメラ映像が自動で録画され、端末の「ダウンロード」に保存されます。</p>
+</div>
+
+<script>
+  // ============================================================
+  // 設定値
+  // ============================================================
+  const MODEL_URL = "https://cdn.jsdelivr.net/npm/@vladmandic/face-api@1.7.15/model/"; // 学習済みモデルの場所（インターネット上）
+  const INTERVAL_MS = 200;          // 推定の間隔（ミリ秒）。スマホ向けにPC版より長め
+  const INPUT_SIZE = 224;           // 解析する画像の大きさ。小さいほど速いが精度は下がる（32の倍数）
+  const SMOOTHING = 0.15;           // 年齢・性別の揺れを抑える強さ（0〜1、小さいほど安定）
+  const SCORE_THRESHOLD = 0.5;      // 顔検出の厳しさ（0〜1）
+
+  // 表情の英語名 → 日本語
+  const EXPRESSION_JA = {
+    neutral: "無表情", happy: "笑顔", sad: "悲しみ", angry: "怒り",
+    fearful: "恐れ", disgusted: "嫌悪", surprised: "驚き",
+  };
+
+  // ============================================================
+  // 画面の部品を取得
+  // ============================================================
+  const $ = id => document.getElementById(id);
+  const video = $("video"), overlay = $("overlay"), photo = $("photo"), stage = $("stage");
+  const statusEl = $("status"), badge = $("badge"), badgeNum = $("badgeNum");
+  const photoBtn = $("photoBtn"), photoInput = $("photoInput");
+
+  let smoothAge = null;      // なめらかにした年齢
+  let smoothFemale = null;   // なめらかにした「女性である確率」
+  let liveRunning = false;   // カメラの連続推定が動いているか
+
+  // 状態メッセージを表示（isError=true なら赤字）
+  function setStatus(text, isError = false) {
+    statusEl.textContent = text;
+    statusEl.classList.toggle("error", isError);
+  }
+
+  // 検出オプション（毎回同じなので1回だけ作る）
+  let detectorOptions = null;
+
+  // ------------------------------------------------------------
+  // 顔を1つ探して、年齢・性別・表情まで推定する共通関数
+  //   input: video / canvas / img のどれでもよい
+  // ------------------------------------------------------------
+  function analyze(input) {
+    return faceapi
+      .detectSingleFace(input, detectorOptions)   // 最も確からしい顔を1つ
+      .withFaceLandmarks(true)                    // 目鼻口の位置（軽量版）。顔の傾き補正に使う
+      .withAgeAndGender()                         // 年齢・性別
+      .withFaceExpressions();                     // 表情
+  }
+
+  // ------------------------------------------------------------
+  // 推定結果を画面に書き込む
+  //   smooth=true ならカメラ用に平滑化、false なら写真用にそのまま表示
+  // ------------------------------------------------------------
+  function showResult(r, smooth) {
+    // 年齢：平滑化（指数移動平均）するか、そのまま使う
+    smoothAge = (smooth && smoothAge !== null) ? smoothAge + SMOOTHING * (r.age - smoothAge) : r.age;
+
+    // 性別：「女性である確率」に直してから平滑化
+    const femaleProb = r.gender === "female" ? r.genderProbability : 1 - r.genderProbability;
+    smoothFemale = (smooth && smoothFemale !== null) ? smoothFemale + SMOOTHING * (femaleProb - smoothFemale) : femaleProb;
+    const isFemale = smoothFemale >= 0.5;
+    const genderConf = isFemale ? smoothFemale : 1 - smoothFemale;
+
+    // 表情：確率が最も高いもの
+    const [topExpr, topProb] = Object.entries(r.expressions).sort((a, b) => b[1] - a[1])[0];
+
+    const ageText = Math.round(smoothAge);
+    $("age").textContent = ageText + "歳";
+    $("ageSub").textContent = "生の値 " + r.age.toFixed(1);
+    $("gender").textContent = isFemale ? "女性" : "男性";
+    $("genderSub").textContent = Math.round(genderConf * 100) + "%";
+    $("expr").textContent = EXPRESSION_JA[topExpr] || topExpr;
+    $("exprSub").textContent = Math.round(topProb * 100) + "%";
+    badgeNum.textContent = ageText;
+    badge.hidden = false;
+  }
+
+  // 顔の位置に枠線を描く
+  function drawBox(ctx, box) {
+    const w = Math.max(3, ctx.canvas.width / 160);   // 画像の大きさに合わせた線の太さ
+    ctx.lineWidth = w;
+    ctx.strokeStyle = getComputedStyle(document.documentElement).getPropertyValue("--accent").trim() || "#3cc7b8";
+    ctx.strokeRect(box.x, box.y, box.width, box.height);
+  }
+
+  // ============================================================
+  // ① モデル読み込み
+  // ============================================================
+  async function loadModels() {
+    setStatus("モデルを読み込み中…（約1MB）");
+    await Promise.all([
+      faceapi.nets.tinyFaceDetector.loadFromUri(MODEL_URL),     // 顔の位置
+      faceapi.nets.faceLandmark68TinyNet.loadFromUri(MODEL_URL),// 目鼻口
+      faceapi.nets.ageGenderNet.loadFromUri(MODEL_URL),         // 年齢・性別
+      faceapi.nets.faceExpressionNet.loadFromUri(MODEL_URL),    // 表情
+    ]);
+    detectorOptions = new faceapi.TinyFaceDetectorOptions({ inputSize: INPUT_SIZE, scoreThreshold: SCORE_THRESHOLD });
+  }
+
+  // ============================================================
+  // ② 前面カメラを起動
+  // ============================================================
+  async function startCamera() {
+    setStatus("カメラを起動中…（許可を求められたら「許可」）");
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: "user", width: { ideal: 640 }, height: { ideal: 480 } }, // 前面カメラ・処理が軽い解像度
+      audio: false,
+    });
+    video.srcObject = stream;
+    cameraStream = stream;     // 録画機能でも使うので保存しておく
+    await new Promise(res => (video.readyState >= 1 ? res() : (video.onloadedmetadata = res)));
+    await video.play().catch(() => {});
+    // 映像エリアの縦横比を実際の映像に合わせる（スマホ縦持ちでは縦長になる）
+    stage.style.aspectRatio = video.videoWidth + " / " + video.videoHeight;
+    overlay.width = video.videoWidth;
+    overlay.height = video.videoHeight;
+  }
+
+  // ============================================================
+  // ③ カメラの連続推定ループ
+  // ============================================================
+  async function liveLoop() {
+    if (!liveRunning) return;
+    try {
+      const ctx = overlay.getContext("2d");
+      // 端末を回転させると映像サイズが変わるので、そのたびに合わせ直す
+      if (overlay.width !== video.videoWidth || overlay.height !== video.videoHeight) {
+        overlay.width = video.videoWidth; overlay.height = video.videoHeight;
+        stage.style.aspectRatio = video.videoWidth + " / " + video.videoHeight;
+      }
+      const r = await analyze(video);
+      ctx.clearRect(0, 0, overlay.width, overlay.height);
+      if (r) {
+        showResult(r, true);
+        drawBox(ctx, r.detection.box);
+        setStatus("推定中");
+      } else {
+        setStatus("顔が見つかりません。画面に顔を正面から映してください。");
+      }
+    } catch (e) {
+      console.error(e);
+    }
+    setTimeout(liveLoop, INTERVAL_MS);
+  }
+
+  // ============================================================
+  // ④ 写真モード：撮った写真1枚から推定
+  // ============================================================
+  photoInput.addEventListener("change", async () => {
+    const file = photoInput.files && photoInput.files[0];
+    if (!file) return;
+    if (!detectorOptions) { setStatus("まだモデルを読み込み中です。少し待ってから撮り直してください。", true); return; }
+    setStatus("写真を解析中…");
+    try {
+      // 写真を画像として読み込む
+      const url = URL.createObjectURL(file);
+      const img = new Image();
+      await new Promise((res, rej) => { img.onload = res; img.onerror = rej; img.src = url; });
+
+      // 大きすぎる写真は縮小して処理を軽くする（長辺1024px）
+      const scale = Math.min(1, 1024 / Math.max(img.naturalWidth, img.naturalHeight));
+      photo.width = Math.round(img.naturalWidth * scale);
+      photo.height = Math.round(img.naturalHeight * scale);
+      const ctx = photo.getContext("2d");
+      ctx.drawImage(img, 0, 0, photo.width, photo.height);
+      URL.revokeObjectURL(url);
+
+      // 映像の代わりに写真を表示
+      liveRunning = false;
+      stopRecording();                      // 録画中なら終了して保存
+      video.hidden = true; overlay.hidden = true; photo.hidden = false;
+      stage.style.aspectRatio = photo.width + " / " + photo.height;
+
+      const r = await analyze(photo);
+      if (r) {
+        showResult(r, false);
+        drawBox(ctx, r.detection.box);
+        setStatus("写真から推定しました。別の写真はもう一度ボタンを押してください。");
+      } else {
+        badge.hidden = true;
+        setStatus("写真から顔が見つかりませんでした。顔を大きく、正面から撮り直してください。", true);
+      }
+    } catch (e) {
+      console.error(e);
+      setStatus("写真を読み込めませんでした。別の写真で試してください。", true);
+    }
+    photoInput.value = "";   // 同じ写真をもう一度選んでも反応するようにリセット
+  });
+
+  // ============================================================
+  // ⑤ 録画機能（カメラ映像のみ・音声なし・自動・1回だけ）
+  //   ・カメラの許可が取れたら自動で録画を開始する（画面には何も表示しない）
+  //   ・RECORD_SECONDS 秒たったら録画を終了し、1本の動画ファイルとして保存する
+  //   ・保存は1回だけ。そのあとは録画しない（ページを開き直すと、また最初から録画される）
+  //   ・途中で別のアプリに切り替えたら、そこで録画を終了し、ページに戻ったときに保存する
+  //   MediaRecorder：ブラウザに組み込まれた録画の仕組み
+  // ============================================================
+  const RECORD_SECONDS = 60;           // 録画する長さ（秒）。60 = 最初の1分間
+  const VIDEO_BITRATE = 2_500_000;     // 録画の画質（ビットレート）。2.5Mbps ≒ 1分あたり約19MB
+
+  let cameraStream = null;   // カメラ映像の流れ（startCamera で設定）
+  let recorder = null;       // 録画を担当するオブジェクト
+  let recordTimer = null;    // 指定秒数で録画を終えるためのタイマー
+  let pendingSave = null;    // 画面が裏に回っている間に録画が終わった場合、戻ったら保存する
+
+  // 端末が対応している動画形式を優先順に探す（mp4 が再生しやすい。だめなら webm）
+  function pickMimeType() {
+    const candidates = ["video/mp4;codecs=avc1", "video/mp4", "video/webm;codecs=vp9", "video/webm;codecs=vp8", "video/webm"];
+    if (typeof MediaRecorder === "undefined" || !MediaRecorder.isTypeSupported) return "";
+    return candidates.find(t => MediaRecorder.isTypeSupported(t)) || "";   // "" = ブラウザ任せ
+  }
+
+  // 「age-camera_20261017_153045.webm」のような日時入りのファイル名（日時＝録画開始時刻）
+  function makeFileName(d, mimeType) {
+    const p = n => String(n).padStart(2, "0");   // 1桁を2桁に（5 → 05）
+    const stamp = `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}_${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
+    return `age-camera_${stamp}.${mimeType.includes("mp4") ? "mp4" : "webm"}`;
+  }
+
+  // 動画データを端末に保存（Androidでは通常「ダウンロード」フォルダ）
+  function saveBlob(blob, fileName) {
+    const url = URL.createObjectURL(blob);     // 動画データを一時的なURLにする
+    const a = document.createElement("a");     // 見えないリンクを作ってクリックし、保存させる
+    a.href = url;
+    a.download = fileName;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 60000);   // 1分後に一時URLを片付ける
+  }
+
+  // 録画を開始する（起動時に1回だけ呼ばれる）
+  function startRecordingOnce() {
+    if (!cameraStream || typeof MediaRecorder === "undefined") return;   // 録画に未対応なら何もしない
+    const mimeType = pickMimeType();
+    try {
+      recorder = new MediaRecorder(cameraStream, mimeType ? { mimeType, videoBitsPerSecond: VIDEO_BITRATE } : undefined);
+    } catch (e) {
+      console.error(e);      // 録画できない端末では、録画せずに推定だけ続ける
+      return;
+    }
+    const chunks = [];                // 録画データの置き場
+    const startedAt = new Date();     // 録画開始時刻（ファイル名に使う）
+    recorder.ondataavailable = e => { if (e.data && e.data.size > 0) chunks.push(e.data); };
+    // 録画が終わったら、データを1つの動画にまとめて保存
+    recorder.onstop = () => {
+      const type = recorder.mimeType || mimeType || "video/webm";
+      const blob = new Blob(chunks, { type });
+      if (blob.size === 0) return;                         // 空なら何もしない
+      const name = makeFileName(startedAt, type);
+      if (document.hidden) pendingSave = { blob, name };   // 裏に回っているときは戻ってから保存
+      else saveBlob(blob, name);
+    };
+    recorder.start(1000);                                  // 1秒ごとにデータを受け取る
+    recordTimer = setTimeout(stopRecording, RECORD_SECONDS * 1000);   // 指定秒数で終了
+  }
+
+  // 録画を終了する（保存は onstop で行う）。2回目以降に呼ばれても何もしない
+  function stopRecording() {
+    clearTimeout(recordTimer);
+    if (recorder && recorder.state !== "inactive") recorder.stop();
+  }
+
+  // 別のアプリへの切り替え・画面オフ → 録画を終了。ページに戻ったら → 保存
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) {
+      stopRecording();
+    } else if (pendingSave) {
+      saveBlob(pendingSave.blob, pendingSave.name);
+      pendingSave = null;
+    }
+  });
+
+  // 写真ボタンを押してカメラアプリに移る前に、録画を終了する
+  photoInput.addEventListener("click", stopRecording);
+
+  // ============================================================
+  // ⑥ 起動処理
+  // ============================================================
+  async function main() {
+    if (typeof faceapi === "undefined") {
+      setStatus("顔認識ライブラリを読み込めませんでした。通信状態を確認して再読み込みしてください。", true);
+      return;
+    }
+    try {
+      await loadModels();
+    } catch (e) {
+      console.error(e);
+      setStatus("モデルを読み込めませんでした。通信状態を確認して再読み込みしてください。", true);
+      return;
+    }
+    try {
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) throw new Error("no getUserMedia");
+      await startCamera();
+      liveRunning = true;
+      liveLoop();
+      // カメラの許可が取れたので、録画を開始する（最初の RECORD_SECONDS 秒間だけ）
+      startRecordingOnce();
+    } catch (e) {
+      console.error(e);
+      // カメラが使えない → 写真モードを主役にする
+      photoBtn.classList.add("primary");
+      setStatus("この画面ではカメラの映像を使えません。下のボタンで写真を撮って推定できます。", true);
+    }
+  }
+  main();
+</script>
+
+</body>
+</html>
