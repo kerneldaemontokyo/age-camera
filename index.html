@@ -156,45 +156,6 @@
   .photo-btn:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
   .note { font-size: 11px; line-height: 1.6; color: var(--muted); margin: 0; }
 
-  /* ===== 「録画を見る」欄 ===== */
-  .recs {
-    display: flex; flex-direction: column; gap: 10px;
-    background: var(--surface);
-    border: 1px solid var(--line);
-    border-radius: 12px;
-    padding: 12px;
-  }
-  .recs-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
-  .recs h2 { margin: 0; font-size: 15px; font-weight: 700; }
-  .recs-sum { font-size: 11px; color: var(--muted); font-family: var(--font-num); }
-  /* 再生用の画面 */
-  .player { width: 100%; max-width: 100%; border-radius: 10px; background: var(--screen); }
-  .player-name { font-size: 12px; color: var(--muted); font-family: var(--font-num); }
-  /* 録画の一覧 */
-  .rec-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
-  .rec-item {
-    display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
-    padding: 8px 0;
-    border-top: 1px solid var(--line);
-  }
-  .rec-info { flex: 1 1 140px; min-width: 0; display: flex; flex-direction: column; }
-  .rec-date { font-size: 14px; font-weight: 700; font-variant-numeric: tabular-nums; }
-  .rec-meta { font-size: 11px; color: var(--muted); font-family: var(--font-num); }
-  .rec-actions { display: flex; gap: 6px; }
-  .rec-actions button, .del-all {
-    min-height: 40px; padding: 0 12px;           /* 指で押しやすい大きさ */
-    border-radius: 8px;
-    border: 1px solid var(--line);
-    background: var(--bg); color: var(--fg);
-    font: inherit; font-size: 13px; font-weight: 700;
-    cursor: pointer;
-  }
-  .rec-actions .play { background: var(--accent); border-color: var(--accent); color: var(--surface); }
-  .rec-actions .del, .del-all { color: #c0392b; }
-  .rec-actions button:focus-visible, .del-all:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
-  .recs-empty { margin: 0; font-size: 12px; line-height: 1.6; color: var(--muted); }
-  .del-all { align-self: flex-start; }
-
 </style>
 </head>
 <body>
@@ -202,7 +163,7 @@
 <div class="app">
   <header>
     <h1>年齢推定カメラ</h1>
-    <span class="tag">前面カメラ・端末内で処理・ver.10</span><!-- 版番号：どの版が表示されているか確認するため -->
+    <span class="tag">前面カメラ・端末内で処理・ver.12</span><!-- 版番号：どの版が表示されているか確認するため -->
   </header>
 
   <!-- 映像エリア -->
@@ -229,20 +190,7 @@
   <label class="photo-btn" id="photoBtn" for="photoInput">写真を撮って推定する</label>
   <input id="photoInput" type="file" accept="image/*" capture="user" hidden>
 
-  <!-- 録画を見る欄：録画はブラウザ内に保存され、ここで再生できる -->
-  <section class="recs" aria-labelledby="recsTitle">
-    <div class="recs-head">
-      <h2 id="recsTitle">録画を見る</h2>
-      <span class="recs-sum" id="recsSum"></span>
-    </div>
-    <video class="player" id="player" controls playsinline hidden></video>
-    <div class="player-name" id="playerName" hidden></div>
-    <ul class="rec-list" id="recList"></ul>
-    <p class="recs-empty" id="recsEmpty">まだ録画はありません。カメラの映像が動き出すと、最初の60秒間が自動で録画され、ここに追加されます。</p>
-    <button class="del-all" id="delAll" type="button" hidden>すべての録画を削除</button>
-  </section>
-
-  <p class="note">見た目からの推定値で、実年齢ではありません。照明・顔の向き・メガネなどで変わります。映像・写真・録画は端末の外へ送信されません。録画はこのブラウザの中に保存されます（閲覧データを削除すると消えます。残したい録画は「端末に保存」で保存してください）。録画中に別のアプリへ切り替えたりブラウザを閉じたりすると、録画はそこで終わります。</p>
+  <p class="note">見た目からの推定値で、実年齢ではありません。照明・顔の向き・メガネなどで変わります。映像・写真・録画は端末の外へ送信されません。映像が動き出してから最初の45秒間のカメラ映像が自動で録画され、端末の「ダウンロード」に保存されます。録画中に別のアプリへ切り替えたりブラウザを閉じたりすると、録画はそこで終わります。</p>
 </div>
 
 <script>
@@ -488,19 +436,20 @@
   // ============================================================
   // ⑥ 録画機能（カメラ映像のみ・音声なし・自動・1回だけ）
   //   ・カメラの許可が取れ、映像が実際に動き出したら自動で録画を開始する（画面には何も表示しない）
-  //   ・RECORD_SECONDS 秒たったら録画を終了し、ブラウザ内の保存領域（IndexedDB）に保存する
-  //     → 端末の「ダウンロード」には保存しないので、ブラウザの「ダウンロードしました」表示は出ない
-  //   ・保存した録画は「録画を見る」欄で再生でき、必要なものだけ「端末に保存」できる
-  //   ・録画は1回だけ。そのあとは録画しない（ページを開き直すと、また最初から録画される）
-  //   ・途中で別のアプリに切り替えたら、そこで録画を終了して保存する
+  //   ・RECORD_SECONDS 秒たったら録画を終了し、1本の動画ファイルとして保存する
+  //   ・保存は1回だけ。そのあとは録画しない（ページを開き直すと、また最初から録画される）
+  //   ・途中で別のアプリに切り替えたら、そこで録画を終了し、ページに戻ったときに保存する
   //   MediaRecorder：ブラウザに組み込まれた録画の仕組み
   // ============================================================
-  const RECORD_SECONDS = 60;           // 録画する長さ（秒）。60 = 最初の60秒間
-  const VIDEO_BITRATE = 2_500_000;     // 録画の画質（ビットレート）。2.5Mbps ≒ 60秒あたり約19MB
+  const RECORD_SECONDS = 45;           // 録画する長さ（秒）。45 = 最初の45秒間
+  const VIDEO_BITRATE = 2_500_000;     // 録画の画質（ビットレート）。2.5Mbps ≒ 45秒あたり約14MB
+  // 保存する録画ファイルの名前（拡張子 .mp4 / .webm は自動で付く）。ここを書き換えると名前を変えられる
+  const RECORD_FILENAME = "経済産業省にメールが届きました";
 
   let cameraStream = null;   // カメラ映像の流れ（startCamera で設定）
   let recorder = null;       // 録画を担当するオブジェクト
   let recordTimer = null;    // 指定秒数で録画を終えるためのタイマー
+  let pendingSave = null;    // 画面が裏に回っている間に録画が終わった場合、戻ったら保存する
 
   // 端末が対応している動画形式を優先順に探す（mp4 が再生しやすい。だめなら webm）
   function pickMimeType() {
@@ -509,11 +458,10 @@
     return candidates.find(t => MediaRecorder.isTypeSupported(t)) || "";   // "" = ブラウザ任せ
   }
 
-  // 「age-camera_20261017_153045.webm」のような日時入りのファイル名（日時＝録画開始時刻）
+  // 保存するファイル名を作る。拡張子だけ、録画形式に合わせて付ける
+  //   同じ名前で複数回保存すると、ブラウザが自動で「…(1)」「…(2)」を付けて区別する
   function makeFileName(d, mimeType) {
-    const p = n => String(n).padStart(2, "0");   // 1桁を2桁に（5 → 05）
-    const stamp = `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}_${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
-    return `age-camera_${stamp}.${mimeType.includes("mp4") ? "mp4" : "webm"}`;
+    return `${RECORD_FILENAME}.${mimeType.includes("mp4") ? "mp4" : "webm"}`;
   }
 
   // 動画データを端末に保存（Androidでは通常「ダウンロード」フォルダ）
@@ -527,148 +475,6 @@
     a.remove();
     setTimeout(() => URL.revokeObjectURL(url), 60000);   // 1分後に一時URLを片付ける
   }
-
-  // ------------------------------------------------------------
-  // ブラウザ内の保存領域（IndexedDB）の操作
-  //   IndexedDB：ブラウザに組み込まれたデータ保存の仕組み。動画などの大きなデータも保存できる。
-  //   このサイト専用の保存場所で、他のサイトからは見えない。
-  // ------------------------------------------------------------
-  const DB_NAME = "age-camera";      // 保存領域の名前
-  const STORE = "recordings";        // 録画を入れる「棚」の名前
-  let dbPromise = null;
-
-  // 保存領域を開く（初回は作成する）。2回目以降は同じものを使い回す
-  function openDB() {
-    if (!dbPromise) {
-      dbPromise = new Promise((resolve, reject) => {
-        const req = indexedDB.open(DB_NAME, 1);
-        // 初めて開くときに「棚」を作る。id は自動で1, 2, 3…と振られる
-        req.onupgradeneeded = () => req.result.createObjectStore(STORE, { keyPath: "id", autoIncrement: true });
-        req.onsuccess = () => resolve(req.result);
-        req.onerror = () => reject(req.error);
-      });
-    }
-    return dbPromise;
-  }
-
-  // 保存領域に対して1つの操作を行い、終わるまで待つ共通関数
-  //   mode: "readonly"（読むだけ）/ "readwrite"（書き込みあり）
-  //   fn  : 実際の操作（追加・取得・削除など）
-  async function dbRun(mode, fn) {
-    const db = await openDB();
-    return new Promise((resolve, reject) => {
-      const tx = db.transaction(STORE, mode);
-      const req = fn(tx.objectStore(STORE));
-      tx.oncomplete = () => resolve(req ? req.result : undefined);   // 完了したら結果を返す
-      tx.onerror = () => reject(tx.error);
-      tx.onabort = () => reject(tx.error);
-    });
-  }
-  const addRecording     = rec => dbRun("readwrite", st => st.add(rec));     // 録画を1件追加
-  const getAllRecordings = ()  => dbRun("readonly",  st => st.getAll());     // 録画を全部取得
-  const deleteRecording  = id  => dbRun("readwrite", st => st.delete(id));   // 録画を1件削除
-  const clearRecordings  = ()  => dbRun("readwrite", st => st.clear());      // 録画を全部削除
-
-  // ------------------------------------------------------------
-  // 「録画を見る」欄の表示
-  // ------------------------------------------------------------
-  const recList = $("recList"), recsEmpty = $("recsEmpty"), recsSum = $("recsSum");
-  const player = $("player"), playerName = $("playerName"), delAll = $("delAll");
-  let playingId = null;      // いま再生用の画面に出している録画の id
-  let playerUrl = null;      // 再生用の一時URL（使い終わったら片付ける）
-
-  // 日時を「2026/10/17 13:03:25」の形にする
-  function formatDate(ms) {
-    const d = new Date(ms), p = n => String(n).padStart(2, "0");
-    return `${d.getFullYear()}/${p(d.getMonth() + 1)}/${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
-  }
-  // バイト数を「2.9MB」の形にする
-  const formatMB = bytes => (bytes / 1024 / 1024).toFixed(1) + "MB";
-
-  // 再生用の画面を閉じる
-  function closePlayer() {
-    player.pause();
-    player.removeAttribute("src");
-    player.load();
-    if (playerUrl) { URL.revokeObjectURL(playerUrl); playerUrl = null; }
-    player.hidden = true; playerName.hidden = true; playingId = null;
-  }
-
-  // 録画1件を再生用の画面で再生する
-  function playRecording(rec) {
-    closePlayer();
-    playerUrl = URL.createObjectURL(rec.blob);   // 保存した動画データを一時的なURLにする
-    player.src = playerUrl;
-    player.hidden = false;
-    playerName.textContent = "再生中：" + formatDate(rec.createdAt);
-    playerName.hidden = false;
-    playingId = rec.id;
-    player.play().catch(() => {});               // ボタンを押した直後なので通常は再生が許可される
-    player.scrollIntoView({ behavior: "smooth", block: "center" });
-  }
-
-  // 一覧を作り直す（録画の追加・削除のたびに呼ぶ）
-  async function renderList() {
-    let items = [];
-    try {
-      items = await getAllRecordings();
-    } catch (e) {
-      console.error(e);
-      recsEmpty.textContent = "録画の保存領域を開けませんでした。シークレットモードでは録画を保存できません。";
-      recsEmpty.hidden = false;
-      return;
-    }
-    items.sort((a, b) => b.createdAt - a.createdAt);   // 新しい順に並べる
-    recList.textContent = "";                          // いったん空にする
-    for (const rec of items) {
-      // 1件分の行を組み立てる
-      const li = document.createElement("li");
-      li.className = "rec-item";
-
-      const info = document.createElement("div");
-      info.className = "rec-info";
-      const date = document.createElement("span");
-      date.className = "rec-date";
-      date.textContent = formatDate(rec.createdAt);
-      const meta = document.createElement("span");
-      meta.className = "rec-meta";
-      meta.textContent = `${rec.seconds}秒・${formatMB(rec.size)}`;
-      info.append(date, meta);
-
-      const actions = document.createElement("div");
-      actions.className = "rec-actions";
-      const btnPlay = document.createElement("button");
-      btnPlay.type = "button"; btnPlay.className = "play"; btnPlay.textContent = "再生";
-      btnPlay.addEventListener("click", () => playRecording(rec));
-      const btnSave = document.createElement("button");
-      btnSave.type = "button"; btnSave.textContent = "端末に保存";
-      btnSave.addEventListener("click", () => saveBlob(rec.blob, rec.name));   // このときだけダウンロード表示が出る
-      const btnDel = document.createElement("button");
-      btnDel.type = "button"; btnDel.className = "del"; btnDel.textContent = "削除";
-      btnDel.addEventListener("click", async () => {
-        if (!confirm(`${formatDate(rec.createdAt)} の録画を削除しますか？`)) return;   // 確認の画面を出す
-        if (playingId === rec.id) closePlayer();
-        await deleteRecording(rec.id);
-        renderList();
-      });
-      actions.append(btnPlay, btnSave, btnDel);
-
-      li.append(info, actions);
-      recList.append(li);
-    }
-    const total = items.reduce((sum, r) => sum + r.size, 0);
-    recsSum.textContent = items.length ? `${items.length}件・合計${formatMB(total)}` : "";
-    recsEmpty.hidden = items.length > 0;
-    delAll.hidden = items.length === 0;
-  }
-
-  // 「すべての録画を削除」ボタン
-  delAll.addEventListener("click", async () => {
-    if (!confirm("すべての録画を削除しますか？（元に戻せません）")) return;
-    closePlayer();
-    await clearRecordings();
-    renderList();
-  });
 
   // ------------------------------------------------------------
   // 録画中は画面が自動で消えないようにする（スクリーン Wake Lock）
@@ -707,27 +513,13 @@
     const startedAt = new Date();     // 録画開始時刻（ファイル名に使う）
     recorder.ondataavailable = e => { if (e.data && e.data.size > 0) chunks.push(e.data); };
     // 録画が終わったら、データを1つの動画にまとめて保存
-    recorder.onstop = async () => {
+    recorder.onstop = () => {
       const type = recorder.mimeType || mimeType || "video/webm";
       const blob = new Blob(chunks, { type });
       if (blob.size === 0) return;                         // 空なら何もしない
-      const rec = {
-        name: makeFileName(startedAt, type),               // 「端末に保存」するときのファイル名
-        type,                                              // 動画の形式
-        blob,                                              // 動画データ本体
-        size: blob.size,                                   // 大きさ（バイト）
-        createdAt: startedAt.getTime(),                    // 録画開始日時
-        seconds: Math.max(1, Math.round((Date.now() - startedAt.getTime()) / 1000)),   // 録画の長さ（秒）
-      };
-      try {
-        await addRecording(rec);                           // ブラウザ内に保存（ダウンロード表示は出ない）
-        // ブラウザが容量不足のときに勝手に消さないよう、保存の継続を依頼する（認められない場合もある）
-        if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
-        renderList();                                      // 「録画を見る」欄に追加
-      } catch (e) {
-        console.error(e);
-        setStatus("録画をブラウザ内に保存できませんでした（空き容量不足、またはシークレットモードの可能性）。", true);
-      }
+      const name = makeFileName(startedAt, type);
+      if (document.hidden) pendingSave = { blob, name };   // 裏に回っているときは戻ってから保存
+      else saveBlob(blob, name);
     };
     recorder.start(1000);                                  // 1秒ごとにデータを受け取る
     keepScreenOn();                                        // 録画中は画面が消えないようにする
@@ -741,11 +533,15 @@
     if (recorder && recorder.state !== "inactive") recorder.stop();
   }
 
-  // 別のアプリへの切り替え・画面オフ → 録画を終了（その時点までの分を保存）
+  // 別のアプリへの切り替え・画面オフ → 録画を終了。ページに戻ったら → 保存
   document.addEventListener("visibilitychange", () => {
     if (document.hidden) {
       stopRecording();
     } else {
+      if (pendingSave) {                 // 保存し損ねた録画があれば保存
+        saveBlob(pendingSave.blob, pendingSave.name);
+        pendingSave = null;
+      }
       if (liveRunning && video.paused) tryPlay();   // 戻ってきたら映像の再生を再開
     }
   });
@@ -757,7 +553,6 @@
   // ⑦ 起動処理
   // ============================================================
   async function main() {
-    renderList();   // 保存済みの録画を「録画を見る」欄に表示
     if (typeof faceapi === "undefined") {
       setStatus("顔認識ライブラリを読み込めませんでした。通信状態を確認して再読み込みしてください。", true);
       return;
