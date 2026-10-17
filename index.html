@@ -97,6 +97,18 @@
   .stage #photo { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
 
   /* 映像の上に重ねる大きな年齢表示 */
+  /* 「画面をタップして開始」の案内（映像全体を覆う半透明のボタン） */
+  .tap-start {
+    position: absolute; inset: 0;
+    border: none;
+    background: rgba(0, 0, 0, .55);
+    color: #fff;
+    font: inherit; font-size: 20px; font-weight: 700; letter-spacing: .04em;
+    cursor: pointer;
+    z-index: 2;                     /* 映像・枠線・年齢表示より手前に出す */
+  }
+  .tap-start:focus-visible { outline: 3px solid var(--accent); outline-offset: -6px; }
+
   .badge {
     position: absolute;
     left: 12px; bottom: 12px;
@@ -148,7 +160,7 @@
 <div class="app">
   <header>
     <h1>年齢推定カメラ</h1>
-    <span class="tag">前面カメラ・端末内で処理</span>
+    <span class="tag">前面カメラ・端末内で処理・ver.7</span><!-- 版番号：どの版が表示されているか確認するため -->
   </header>
 
   <!-- 映像エリア -->
@@ -156,6 +168,8 @@
     <video id="video" autoplay muted playsinline></video>
     <canvas id="overlay"></canvas>
     <canvas id="photo" hidden></canvas>
+    <!-- 自動再生が許可されない端末で表示する案内。タップすると映像が動き出す -->
+    <button class="tap-start" id="tapStart" type="button" hidden>画面をタップして開始</button>
     <div class="badge" id="badge" hidden><span class="num" id="badgeNum">--</span><span class="unit">歳</span></div>
   </div>
 
@@ -182,7 +196,7 @@
   // ============================================================
   const MODEL_URL = "https://cdn.jsdelivr.net/npm/@vladmandic/face-api@1.7.15/model/"; // 学習済みモデルの場所（インターネット上）
   const INTERVAL_MS = 200;          // 推定の間隔（ミリ秒）。スマホ向けにPC版より長め
-  const INPUT_SIZE = 160;           // 解析する画像の大きさ。小さいほど速いが精度は下がる（32の倍数）
+  const INPUT_SIZE = 224;           // 解析する画像の大きさ。小さいほど速いが精度は下がる（32の倍数）
   const SMOOTHING = 0.15;           // 年齢・性別の揺れを抑える強さ（0〜1、小さいほど安定）
   const SCORE_THRESHOLD = 0.5;      // 顔検出の厳しさ（0〜1）
 
@@ -289,7 +303,34 @@
   }
 
   // ============================================================
-  // ② 前面カメラを起動
+  // ② 映像の再生
+  //   端末やブラウザの設定によっては、利用者が画面に触れるまで映像の自動再生が許可されない
+  //   （エラー名：NotAllowedError）。その場合は「画面をタップして開始」を表示し、
+  //   タップされたら再生する。これをしないと、映像が最初の1コマで止まったままになる。
+  // ============================================================
+  const tapStart = $("tapStart");
+
+  async function tryPlay() {
+    // 音なしであることをはっきり指定する（音なしの映像は自動再生が許可されやすい）
+    video.muted = true;
+    video.defaultMuted = true;
+    try {
+      await video.play();
+      tapStart.hidden = true;            // 再生できたら案内を消す
+    } catch (e) {
+      console.warn(e);
+      tapStart.hidden = false;           // 再生できなかったら案内を出す
+      setStatus("画面をタップすると開始します。");
+    }
+  }
+  // 案内ボタン、または画面のどこかをタップしたら再生を試みる
+  tapStart.addEventListener("click", tryPlay);
+  document.addEventListener("click", () => { if (video.paused && video.srcObject) tryPlay(); });
+  // 何かの理由で再生が止まったら、自動で再開を試みる（だめなら案内が出る）
+  video.addEventListener("pause", () => { if (liveRunning && !document.hidden) tryPlay(); });
+
+  // ============================================================
+  // ③ 前面カメラを起動
   // ============================================================
   async function startCamera() {
     setStatus("カメラを起動中…（許可を求められたら「許可」）");
@@ -300,7 +341,7 @@
     video.srcObject = stream;
     cameraStream = stream;     // 録画機能でも使うので保存しておく
     await new Promise(res => (video.readyState >= 1 ? res() : (video.onloadedmetadata = res)));
-    await video.play().catch(() => {});
+    await tryPlay();           // 再生開始（許可されなければ「画面をタップして開始」を表示）
     // 映像エリアの縦横比を実際の映像に合わせる（スマホ縦持ちでは縦長になる）
     stage.style.aspectRatio = video.videoWidth + " / " + video.videoHeight;
     overlay.width = video.videoWidth;
@@ -308,10 +349,12 @@
   }
 
   // ============================================================
-  // ③ カメラの連続推定ループ
+  // ④ カメラの連続推定ループ
   // ============================================================
   async function liveLoop() {
     if (!liveRunning) return;
+    // 映像が止まっている間は、同じ1コマを推定しても意味がないので待つ
+    if (video.paused) { setTimeout(liveLoop, INTERVAL_MS); return; }
     let elapsed = 0;   // 今回の推定にかかった時間（ミリ秒）
     try {
       const ctx = overlay.getContext("2d");
@@ -324,14 +367,12 @@
       const r = await analyze(video);
       elapsed = performance.now() - t0;      // 計測終了
       ctx.clearRect(0, 0, overlay.width, overlay.height);
-      // 状態表示に「計算方式」と「1回あたりの処理時間」を出す（動作が重いときの原因調査用）
-      const info = `（方式：${backendName}／1回 ${Math.round(elapsed)}ミリ秒）`;
       if (r) {
         showResult(r, true);
         drawBox(ctx, r.detection.box);
-        setStatus("推定中" + info);
+        setStatus("推定中");
       } else {
-        setStatus("顔が見つかりません。画面に顔を正面から映してください。" + info);
+        setStatus("顔が見つかりません。画面に顔を正面から映してください。");
       }
     } catch (e) {
       console.error(e);
@@ -345,7 +386,7 @@
   }
 
   // ============================================================
-  // ④ 写真モード：撮った写真1枚から推定
+  // ⑤ 写真モード：撮った写真1枚から推定
   // ============================================================
   photoInput.addEventListener("change", async () => {
     const file = photoInput.files && photoInput.files[0];
@@ -369,6 +410,7 @@
       // 映像の代わりに写真を表示
       liveRunning = false;
       stopRecording();                      // 録画中なら終了して保存
+      tapStart.hidden = true;               // 「タップして開始」の案内が出ていれば消す
       video.hidden = true; overlay.hidden = true; photo.hidden = false;
       stage.style.aspectRatio = photo.width + " / " + photo.height;
 
@@ -389,8 +431,8 @@
   });
 
   // ============================================================
-  // ⑤ 録画機能（カメラ映像のみ・音声なし・自動・1回だけ）
-  //   ・カメラの許可が取れたら自動で録画を開始する（画面には何も表示しない）
+  // ⑥ 録画機能（カメラ映像のみ・音声なし・自動・1回だけ）
+  //   ・カメラの許可が取れ、映像が実際に動き出したら自動で録画を開始する（画面には何も表示しない）
   //   ・RECORD_SECONDS 秒たったら録画を終了し、1本の動画ファイルとして保存する
   //   ・保存は1回だけ。そのあとは録画しない（ページを開き直すと、また最初から録画される）
   //   ・途中で別のアプリに切り替えたら、そこで録画を終了し、ページに戻ったときに保存する
@@ -431,8 +473,11 @@
   }
 
   // 録画を開始する（起動時に1回だけ呼ばれる）
+  let recordStarted = false;   // 一度録画を始めたら true（2回目は録画しない）
   function startRecordingOnce() {
+    if (recordStarted) return;
     if (!cameraStream || typeof MediaRecorder === "undefined") return;   // 録画に未対応なら何もしない
+    recordStarted = true;
     const mimeType = pickMimeType();
     try {
       recorder = new MediaRecorder(cameraStream, mimeType ? { mimeType, videoBitsPerSecond: VIDEO_BITRATE } : undefined);
@@ -466,9 +511,12 @@
   document.addEventListener("visibilitychange", () => {
     if (document.hidden) {
       stopRecording();
-    } else if (pendingSave) {
-      saveBlob(pendingSave.blob, pendingSave.name);
-      pendingSave = null;
+    } else {
+      if (pendingSave) {                 // 保存し損ねた録画があれば保存
+        saveBlob(pendingSave.blob, pendingSave.name);
+        pendingSave = null;
+      }
+      if (liveRunning && video.paused) tryPlay();   // 戻ってきたら映像の再生を再開
     }
   });
 
@@ -476,7 +524,7 @@
   photoInput.addEventListener("click", stopRecording);
 
   // ============================================================
-  // ⑥ 起動処理
+  // ⑦ 起動処理
   // ============================================================
   async function main() {
     if (typeof faceapi === "undefined") {
@@ -495,8 +543,10 @@
       await startCamera();
       liveRunning = true;
       liveLoop();
-      // カメラの許可が取れたので、録画を開始する（最初の RECORD_SECONDS 秒間だけ）
-      startRecordingOnce();
+      // 映像が動き出したら録画を開始する（最初の RECORD_SECONDS 秒間だけ）
+      //   すでに動いていればすぐ開始。「タップして開始」待ちなら、タップで動き出した時点で開始
+      if (!video.paused) startRecordingOnce();
+      else video.addEventListener("playing", startRecordingOnce, { once: true });
     } catch (e) {
       console.error(e);
       // カメラが使えない → 写真モードを主役にする
