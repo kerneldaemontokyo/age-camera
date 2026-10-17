@@ -202,7 +202,7 @@
 <div class="app">
   <header>
     <h1>年齢推定カメラ</h1>
-    <span class="tag">前面カメラ・端末内で処理・ver.9</span><!-- 版番号：どの版が表示されているか確認するため -->
+    <span class="tag">前面カメラ・端末内で処理・ver.10</span><!-- 版番号：どの版が表示されているか確認するため -->
   </header>
 
   <!-- 映像エリア -->
@@ -238,7 +238,7 @@
     <video class="player" id="player" controls playsinline hidden></video>
     <div class="player-name" id="playerName" hidden></div>
     <ul class="rec-list" id="recList"></ul>
-    <p class="recs-empty" id="recsEmpty">まだ録画はありません。カメラの映像が動き出すと、最初の2分間が自動で録画され、ここに追加されます。</p>
+    <p class="recs-empty" id="recsEmpty">まだ録画はありません。カメラの映像が動き出すと、最初の60秒間が自動で録画され、ここに追加されます。</p>
     <button class="del-all" id="delAll" type="button" hidden>すべての録画を削除</button>
   </section>
 
@@ -495,8 +495,8 @@
   //   ・途中で別のアプリに切り替えたら、そこで録画を終了して保存する
   //   MediaRecorder：ブラウザに組み込まれた録画の仕組み
   // ============================================================
-  const RECORD_SECONDS = 120;          // 録画する長さ（秒）。120 = 最初の2分間
-  const VIDEO_BITRATE = 2_500_000;     // 録画の画質（ビットレート）。2.5Mbps ≒ 2分あたり約38MB
+  const RECORD_SECONDS = 60;           // 録画する長さ（秒）。60 = 最初の60秒間
+  const VIDEO_BITRATE = 2_500_000;     // 録画の画質（ビットレート）。2.5Mbps ≒ 60秒あたり約19MB
 
   let cameraStream = null;   // カメラ映像の流れ（startCamera で設定）
   let recorder = null;       // 録画を担当するオブジェクト
